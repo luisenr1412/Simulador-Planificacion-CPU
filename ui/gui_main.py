@@ -10,7 +10,8 @@ Este módulo construye la ventana principal en CustomTkinter e integra:
   - Diagrama de Gantt DINÁMICO dibujado sobre un Canvas a partir del historial
     de CPU que emite el motor lógico (src/planificador.py).
   - Tabla de resultados por proceso y promedios de las métricas.
-  - Gráfico comparativo de algoritmos con Matplotlib.
+  - Gráfico comparativo de algoritmos con Matplotlib (se actualiza solo,
+    cada vez que se corre una simulación, sin necesidad de un botón aparte).
 
 La animación del Gantt se realiza con Canvas.after(), la forma segura de
 refrescar la interfaz en Tkinter sin congelarla (evita el "freezing" del Hito 2).
@@ -45,6 +46,9 @@ COLOR_INACTIVO = "#5A5A5A"   # CPU ociosa
 COLOR_TEXTO = "#FFFFFF"
 COLOR_FONDO_CANVAS = "#242424"
 COLOR_EJE = "#9A9A9A"
+
+# Velocidad fija de la animación del Gantt (ms de espera por unidad de tiempo).
+VELOCIDAD_ANIMACION_MS = 120
 
 # Algoritmos disponibles: etiqueta visible -> (nombre del método, usa_quantum).
 ALGORITMOS = {
@@ -81,11 +85,11 @@ class SimuladorGUI(ctk.CTk):
 
         self._construir_panel_control()
         self._construir_area_visualizacion()
+        self._refrescar_lista_ui()  # muestra "(sin procesos)" al arrancar
 
-        # Carga el lote inicial de ejemplo si existe.
-        ruta_inicial = os.path.join(RAIZ_PROYECTO, "data", "lote_inicial.json")
-        if os.path.exists(ruta_inicial):
-            self._cargar_desde_archivo(ruta_inicial)
+        # No se carga ningún lote automáticamente: el usuario debe agregar
+        # procesos a mano o cargar un archivo (JSON/CSV) para empezar.
+        self._mostrar_mensaje("Agrega procesos manualmente o carga un archivo (JSON/CSV) para comenzar.")
 
         self._actualizar_estado_quantum()
 
@@ -153,21 +157,12 @@ class SimuladorGUI(ctk.CTk):
         self.marco_lista = ctk.CTkFrame(panel)
         self.marco_lista.pack(fill="x", padx=16, pady=(0, 14))
 
-        # -- Velocidad de animación --
-        ctk.CTkLabel(panel, text="Velocidad de animación", anchor="w").pack(fill="x", padx=16, pady=(4, 2))
-        self.slider_velocidad = ctk.CTkSlider(panel, from_=0, to=300, number_of_steps=30)
-        self.slider_velocidad.set(120)   # ms por unidad de tiempo
-        self.slider_velocidad.pack(fill="x", padx=16, pady=(0, 12))
-
-        # -- Botones de acción --
+        # -- Botón de acción --
         self.boton_simular = ctk.CTkButton(
             panel, text="▶  Simular", height=42,
             font=ctk.CTkFont(size=15, weight="bold"), command=self._ejecutar_simulacion,
         )
         self.boton_simular.pack(fill="x", padx=16, pady=(6, 6))
-        ctk.CTkButton(
-            panel, text="📊  Comparar los 4 algoritmos", command=self._comparar_algoritmos,
-        ).pack(fill="x", padx=16, pady=(0, 12))
 
         # -- Estado / mensajes --
         self.label_estado = ctk.CTkLabel(
@@ -259,7 +254,7 @@ class SimuladorGUI(ctk.CTk):
         self.marco_grafico.grid_rowconfigure(0, weight=1)
 
         self.info_comparacion = ctk.CTkLabel(
-            tab, text='Pulsa "Comparar los 4 algoritmos" para generar el gráfico.',
+            tab, text="Se actualiza automáticamente al simular.",
             text_color="#9A9A9A")
         self.info_comparacion.grid(row=0, column=0, sticky="e")
         self._canvas_grafico = None  # FigureCanvasTkAgg actual
@@ -399,7 +394,8 @@ class SimuladorGUI(ctk.CTk):
     #  Simulación individual + Gantt
     # ------------------------------------------------------------------ #
     def _ejecutar_simulacion(self):
-        """Ejecuta el algoritmo elegido y lanza la animación del Gantt."""
+        """Ejecuta el algoritmo elegido, lanza la animación del Gantt y
+        actualiza de una vez la comparación entre los 4 algoritmos."""
         if self._animacion_id is not None:
             self.canvas.after_cancel(self._animacion_id)
             self._animacion_id = None
@@ -421,6 +417,8 @@ class SimuladorGUI(ctk.CTk):
         self._llenar_tabla_resultados(planificador.procesos_terminados)
         self.tabs.set("Diagrama de Gantt")
         self._animar_gantt()
+
+        self._actualizar_comparacion()
 
     def _asignar_colores(self, procesos):
         """Asigna un color estable de la paleta a cada proceso."""
@@ -468,7 +466,7 @@ class SimuladorGUI(ctk.CTk):
             if x1 > self.canvas.winfo_width():
                 self.canvas.xview_moveto(max(0.0, (x1 - self.canvas.winfo_width()) / ancho_total))
 
-            self._animacion_id = self.canvas.after(int(self.slider_velocidad.get()),
+            self._animacion_id = self.canvas.after(VELOCIDAD_ANIMACION_MS,
                                                    dibujar_celda, indice + 1)
 
         dibujar_celda(0)
@@ -532,12 +530,13 @@ class SimuladorGUI(ctk.CTk):
                     row=fila, column=col, padx=6, pady=3, sticky="w")
 
     # ------------------------------------------------------------------ #
-    #  Comparación de algoritmos (Matplotlib)
+    #  Comparación de algoritmos (Matplotlib) — automática, sin botón
     # ------------------------------------------------------------------ #
-    def _comparar_algoritmos(self):
-        """Corre los 4 algoritmos sobre el mismo lote y grafica sus promedios."""
+    def _actualizar_comparacion(self):
+        """Corre los 4 algoritmos sobre el lote actual y refresca el gráfico
+        de la pestaña Comparación. Se llama sola: al arrancar (con el lote
+        inicial) y cada vez que se pulsa Simular."""
         if not self.procesos_editables:
-            self._mostrar_mensaje("Agrega o carga al menos un proceso.", es_error=True)
             return
 
         quantum = None
@@ -559,8 +558,6 @@ class SimuladorGUI(ctk.CTk):
             respuestas.append(prom["respuesta"])
 
         self._dibujar_grafico_comparativo(etiquetas, esperas, retornos, respuestas)
-        self.tabs.set("Comparación")
-        self._mostrar_mensaje("Comparación generada.")
 
     def _dibujar_grafico_comparativo(self, etiquetas, esperas, retornos, respuestas):
         """Dibuja un gráfico de barras agrupadas con los promedios por algoritmo."""
